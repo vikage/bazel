@@ -468,6 +468,7 @@ message Execution {
     reserved 38;
     SOURCE_INPUT_IO_EXCEPTION = 39 [(metadata) = { exit_code: 1 }];
     SYMLINK_TREE_DELETION_IO_EXCEPTION = 40 [(metadata) = { exit_code: 36 }];
+    INPUT_FILE_MODIFIED_DURING_EXECUTION = 41 [(metadata) = { exit_code: 36 }];
   }
 
   Code code = 1;
