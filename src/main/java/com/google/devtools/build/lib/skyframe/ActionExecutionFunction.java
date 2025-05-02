@@ -38,6 +38,7 @@ import com.google.devtools.build.lib.actions.ActionCacheChecker.Token;
 import com.google.devtools.build.lib.actions.ActionCompletionEvent;
 import com.google.devtools.build.lib.actions.ActionExecutedEvent.ErrorTiming;
 import com.google.devtools.build.lib.actions.ActionExecutionException;
+import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputMap;
 import com.google.devtools.build.lib.actions.ActionLookupData;
 import com.google.devtools.build.lib.actions.Actions;
@@ -91,6 +92,7 @@ import com.google.devtools.build.lib.util.DetailedExitCode.DetailedExitCodeCompa
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.io.TimestampGranularityMonitor;
 import com.google.devtools.build.lib.vfs.FileSystem;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.Root;
 import com.google.devtools.build.skyframe.MemoizingEvaluator;
@@ -101,6 +103,7 @@ import com.google.devtools.build.skyframe.SkyKey;
 import com.google.devtools.build.skyframe.SkyValue;
 import com.google.devtools.build.skyframe.SkyframeLookupResult;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -847,12 +850,41 @@ public final class ActionExecutionFunction implements SkyFunction {
         }
       }
       checkState(!env.valuesMissing(), action);
+
+      checkForConcurrentModifications(action, inputMetadataProvider);
+
       skyframeActionExecutor.updateActionCache(
           action,
           inputMetadataProvider,
           outputMetadataStore,
           state.token,
           clientEnv);
+    }
+
+    private void checkForConcurrentModifications(Action action, InputMetadataProvider inputMetadataProvider) throws ActionExecutionException {
+      Path execRoot = skyframeActionExecutor.getExecRoot();
+
+      for (ActionInput input : action.getInputs().toList()) {
+        try {
+          FileArtifactValue metadata = inputMetadataProvider.getInputMetadata(input);
+
+          Path path = execRoot.getRelative(input.getExecPath());
+          if (metadata.wasModifiedSinceDigest(path)) {
+            String errorMessage = String.format("input %s was modified during execution of action", input.getExecPath());
+            skyframeActionExecutor.printError(errorMessage, action);
+
+            for (Artifact output: action.getOutputs()) {
+              Path outputPath = execRoot.getRelative(output.getExecPath());
+              outputPath.delete();
+            }
+
+            throw new ActionExecutionException(errorMessage, action, false, createDetailedExitCodeForInputModified(errorMessage));
+          }
+        }
+        catch (IOException e) {
+          logger.atWarning().log("Failed to get check modification for input %s: %s", input, e.getMessage());
+        }
+      }
     }
   }
 
@@ -1563,6 +1595,14 @@ public final class ActionExecutionFunction implements SkyFunction {
         FailureDetail.newBuilder()
             .setMessage(message)
             .setExecution(Execution.newBuilder().setCode(Code.DISCOVERED_INPUT_DOES_NOT_EXIST))
+            .build());
+  }
+
+  private static DetailedExitCode createDetailedExitCodeForInputModified(String message) {
+    return DetailedExitCode.of(
+        FailureDetail.newBuilder()
+            .setMessage(message)
+            .setExecution(Execution.newBuilder().setCode(Code.INPUT_FILE_MODIFIED_DURING_EXECUTION))
             .build());
   }
 }
